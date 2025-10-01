@@ -1,0 +1,161 @@
+import sqlite3
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
+from datetime import datetime, time
+
+# Токены ботов
+TOKEN = '8294869186:AAFXW4_oPojtESNjFrXxy3HILafSj-DZsYA'  # Основной бот
+ADMIN_BOT_TOKEN = '7780990328:AAHozWNig4dY56eK15W2pU0ekR6sxpwEMcM'  # Технический бот
+
+# Рабочие часы магазина
+WORK_START = time(10, 0)  # 10:00
+WORK_END = time(0, 0)    # 00:00 (полночь следующего дня)
+
+# Подключение к базе данных SQLite
+def init_db():
+    conn = sqlite3.connect('orders.db')
+    c = conn.cursor()
+    c.execute('''CREATE TABLE IF NOT EXISTS orders
+                 (client_id INTEGER PRIMARY KEY, status TEXT, details TEXT)''')
+    conn.commit()
+    conn.close()
+
+# Проверка, находится ли текущее время в рабочих часах
+def is_within_working_hours():
+    now = datetime.now().time()
+    return now >= WORK_START or now <= WORK_END
+
+# Команда /start — кнопка "Старт"
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    keyboard = [[InlineKeyboardButton("Старт", callback_data='start_menu')]]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await update.message.reply_text("Вітаємо! Натисніть кнопку, щоб почати.", reply_markup=reply_markup)
+
+# Обработчик кнопки "Старт" — главное меню
+async def start_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    keyboard = [[InlineKeyboardButton("Купити Копію Дії", callback_data='buy_product')]]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await query.edit_message_text(
+        "Ви знаходитесь на головній сторінці нашого боту для покупки копії додатку Фейк Дія. Виберіть опцію нижче.",
+        reply_markup=reply_markup
+    )
+
+# Обработчик кнопки "Купити Копію Дії" — информация о товаре
+async def buy_product(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    keyboard = [[InlineKeyboardButton("✅Оплатити✅", callback_data='pay')]]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await query.edit_message_text(
+        "💎 Преміум Додаток \"Фейк Дія\"\n\n"
+        "✨ Що ви отримаєте:\n"
+        "🌐 Оффлайн-режим (без інтернету)\n"
+        "📸 Сканування QR-кодів камерою телефону\n"
+        "🏛️ Зміна місця народження та реєстрації\n"
+        "🔢 Зміна PIN-коду для входу у застосунок\n\n"
+        "💰 Тарифи:\n"
+        "• Назавжди — 250 грн\n\n"
+        "⏰ Важливо: Після того як ви натискаєте кнопку оплатити, ви отримаєте реквізити протягом 10–30 хвилин, робочий час нашого магазину з 10:00 до 00:00.",
+        reply_markup=reply_markup
+    )
+
+# Обработчик кнопки "✅Оплатити✅"
+async def pay(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    client_id = query.from_user.id
+    
+    # Сохраняем заказ в базу
+    conn = sqlite3.connect('orders.db')
+    c = conn.cursor()
+    c.execute("INSERT OR REPLACE INTO orders (client_id, status, details) VALUES (?, ?, ?)",
+              (client_id, 'waiting_req', ''))
+    conn.commit()
+    conn.close()
+    
+    # Сообщение клиенту
+    message = (
+        "Ваш запит на реквізити отримано!\n"
+        "Реквізити для оплати будуть надіслані протягом 10–30 хвилин.\n"
+        "Робочий час магазину: з 10:00 до 00:00."
+    )
+    if not is_within_working_hours():
+        message += "\nЗараз магазин закрито. Реквізити будуть надіслані після 10:00."
+    
+    await query.edit_message_text(text=message)
+    
+    # Уведомляем админов через технический бот
+    try:
+        from telegram import Bot
+        admin_bot = Bot(token=ADMIN_BOT_TOKEN)
+        # Временное решение: отправляем уведомление в чат с клиентом, но нужно отправить админам
+        # Поскольку ADMIN_IDS есть только в admin_bot.py, уведомление пойдёт всем админам через admin_bot.py
+        await admin_bot.send_message(
+            chat_id=client_id,  # Это временно, исправим в admin_bot.py
+            text=f"Клієнт {client_id} хоче купити товар. Надішліть реквізити через технічний бот: /send_req {client_id} <реквізити>"
+        )
+    except Exception as e:
+        print(f"Помилка надсилання повідомлення адміну: {e}")
+        await query.edit_message_text(text="Помилка при повідомленні адміна. Спробуйте пізніше.")
+
+# Обработчик квитанций (фото или файл) от клиента
+async def handle_payment_proof(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    client_id = update.message.from_user.id
+    conn = sqlite3.connect('orders.db')
+    c = conn.cursor()
+    c.execute("SELECT status FROM orders WHERE client_id = ?", (client_id,))
+    result = c.fetchone()
+    if not result or result[0] != 'waiting_payment':
+        await update.message.reply_text("Спочатку зробіть замовлення та отримайте реквізити!")
+        conn.close()
+        return
+    
+    # Пересылаем квитанцию админам через технический бот
+    try:
+        from telegram import Bot
+        admin_bot = Bot(token=ADMIN_BOT_TOKEN)
+        if update.message.photo:
+            photo = update.message.photo[-1].file_id
+            await admin_bot.send_photo(
+                chat_id=client_id,  # Временная заглушка, исправим в admin_bot.py
+                photo=photo,
+                caption=f"Квитанція (фото) від клієнта {client_id}. Підтвердіть через технічний бот: /confirm {client_id}"
+            )
+        elif update.message.document:
+            document = update.message.document.file_id
+            await admin_bot.send_document(
+                chat_id=client_id,  # Временная заглушка
+                document=document,
+                caption=f"Квитанція (файл) від клієнта {client_id}. Підтвердіть через технічний бот: /confirm {client_id}"
+            )
+        else:
+            await update.message.reply_text("Відправте фото або файл квитанції.")
+            conn.close()
+            return
+        
+        c.execute("UPDATE orders SET status = ? WHERE client_id = ?", ('waiting_confirm', client_id))
+        conn.commit()
+        conn.close()
+        await update.message.reply_text("Ваш платіж перевіряється.")
+    except Exception as e:
+        print(f"Помилка надсилання квитанції адміну: {e}")
+        await update.message.reply_text("Помилка при надсиланні квитанції. Спробуйте ще раз.")
+
+def main():
+    init_db()  # Инициализируем базу данных
+    application = Application.builder().token(TOKEN).build()
+    
+    # Обработчики
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CallbackQueryHandler(start_menu, pattern='start_menu'))
+    application.add_handler(CallbackQueryHandler(buy_product, pattern='buy_product'))
+    application.add_handler(CallbackQueryHandler(pay, pattern='pay'))
+    application.add_handler(MessageHandler(filters.PHOTO | filters.Document.ALL, handle_payment_proof))
+    
+    print("Основной бот запущен...")
+    application.run_polling()
+
+if __name__ == '__main__':
+    main()
