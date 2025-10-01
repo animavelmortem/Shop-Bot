@@ -1,71 +1,80 @@
-import sqlite3
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, Bot
-from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
+import os
+import json
+import gspread
+from google.oauth2.service_account import Credentials
 from datetime import datetime, time, timedelta
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, Bot
+from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
+import pytz
 
-# Токены ботов
-TOKEN = '8294869186:AAFXW4_oPojtESNjFrXxy3HILafSj-DZsYA'  # Основний бот
-ADMIN_BOT_TOKEN = '7780990328:AAHozWNig4dY56eK15W2pU0ekR6sxpwEMcM'  # Технічний бот
+# ==========================
+# Токены и настройки
+# ==========================
+TOKEN = os.environ.get("TELEGRAM_MAIN_BOT_TOKEN")  # Основной бот
+ADMIN_BOT_TOKEN = os.environ.get("TELEGRAM_ADMIN_BOT_TOKEN")  # Тех. бот
+ADMIN_IDS = [5012932270, 7427253214]  # chat_id админов
 
-# Список admin_id (твои chat_id для получения уведомлений)
-ADMIN_IDS = [5012932270, 7427253214]  # Добавьте здесь все админские chat_id
-
-# Рабочие часы магазина
-WORK_START = time(10, 0)  # 10:00
-WORK_END = time(0, 0)     # 00:00 (полночь следующего дня)
-
-# Ограничение запросов на оплату
+WORK_START = time(10, 0)
+WORK_END = time(0, 0)
 MAX_REQUESTS_PER_HOUR = 10
 
-# Подключение к базе данных SQLite
-def init_db():
-    conn = sqlite3.connect('orders.db')
-    c = conn.cursor()
-    c.execute('''CREATE TABLE IF NOT EXISTS orders
-                 (client_id INTEGER PRIMARY KEY, status TEXT, details TEXT)''')
-    c.execute('''CREATE TABLE IF NOT EXISTS requests
-                 (client_id INTEGER, request_time INTEGER)''')
-    conn.commit()
-    conn.close()
+TIMEZONE = pytz.timezone("Europe/Moscow")
 
-# Проверка, находится ли текущее время в рабочих часах
-def is_within_working_hours():
-    now = datetime.now().time()
-    return now >= WORK_START or now <= WORK_END
+# ==========================
+# Google Sheets
+# ==========================
+def get_sheet():
+    creds_json_str = os.environ.get("GCP_SERVICE_ACCOUNT_CREDENTIALS")
+    if not creds_json_str:
+        raise ValueError("GCP_SERVICE_ACCOUNT_CREDENTIALS environment variable not set.")
+    creds_json = json.loads(creds_json_str)
+    scopes = ["https://www.googleapis.com/auth/spreadsheets","https://www.googleapis.com/auth/drive"]
+    creds = Credentials.from_service_account_info(creds_json, scopes=scopes)
+    client = gspread.authorize(creds)
+    sheet = client.open("Orders").sheet1
+    return sheet
 
-# Проверка количества запросов в час
-def check_request_limit(client_id):
+def now_msk():
+    return datetime.now(TIMEZONE).strftime("%Y-%m-%d %H:%M:%S")
+
+def get_order_status(client_id):
+    sheet = get_sheet()
+    records = sheet.get_all_records()
+    client_id_str = str(client_id)
+    for row in records:
+        if str(row.get("client_id")) == client_id_str:
+            return row.get("status")
+    return None
+
+def update_order_status(client_id, new_status):
+    sheet = get_sheet()
+    client_id_str = str(client_id)
     try:
-        conn = sqlite3.connect('orders.db')
-        c = conn.cursor()
-        one_hour_ago = int((datetime.now() - timedelta(hours=1)).timestamp())
-        c.execute("SELECT COUNT(*) FROM requests WHERE client_id = ? AND request_time > ?", (client_id, one_hour_ago))
-        count = c.fetchone()[0]
-        conn.close()
-        return count < MAX_REQUESTS_PER_HOUR
+        cell = sheet.find(client_id_str, in_column=1)
+        row_index = cell.row
+        headers = sheet.row_values(1)
+        status_col = headers.index("status") + 1
+        sheet.update_cell(row_index, status_col, new_status)
+        return True
     except Exception as e:
-        print(f"Помилка перевірки ліміту для {client_id}: {e}")
+        print(f"Ошибка при обновлении заказа {client_id}: {e}")
         return False
 
-# Добавление запроса в базу
-def add_request(client_id):
-    try:
-        conn = sqlite3.connect('orders.db')
-        c = conn.cursor()
-        current_time = int(datetime.now().timestamp())
-        c.execute("INSERT INTO requests (client_id, request_time) VALUES (?, ?)", (client_id, current_time))
-        conn.commit()
-        conn.close()
-    except Exception as e:
-        print(f"Помилка додавання запиту для {client_id}: {e}")
+# ==========================
+# Проверка рабочего времени
+# ==========================
+def is_within_working_hours():
+    now = datetime.now(TIMEZONE).time()
+    return now >= WORK_START or now <= WORK_END
 
-# Команда /start — кнопка "Старт"
+# ==========================
+# Бот — старт и меню
+# ==========================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [[InlineKeyboardButton("Старт", callback_data='start_menu')]]
     reply_markup = InlineKeyboardMarkup(keyboard)
     await update.message.reply_text("Вітаємо! Натисніть кнопку, щоб почати.", reply_markup=reply_markup)
 
-# Обработчик кнопки "Старт" — главное меню
 async def start_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -76,7 +85,6 @@ async def start_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=reply_markup
     )
 
-# Обработчик кнопки "Купити Копію Дії" — информация о товаре
 async def buy_product(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -85,91 +93,60 @@ async def buy_product(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.edit_message_text(
         "💎 Преміум Додаток \"Фейк Дія\"\n\n"
         "✨ Що ви отримаєте:\n"
-        "🌐 Оффлайн-режим (без інтернету)\n"
-        "📸 Сканування QR-кодів камерою телефону\n"
-        "🏛️ Зміна місця народження та реєстрації\n"
-        "🔢 Зміна PIN-коду для входу у застосунок\n\n"
-        "💰 Тарифи:\n"
-        "• Назавжди — 250 грн\n\n"
-        "⏰ Важливо: Після того як ви натискаєте кнопку оплатити, ви отримаєте реквізити протягом 10–30 хвилин, робочий час нашого магазину з 10:00 до 00:00.",
+        "🌐 Оффлайн-режим\n📸 Сканування QR-кодів\n"
+        "🏛️ Зміна місця народження\n🔢 Зміна PIN-коду\n\n"
+        "💰 Тарифи:\n• Назавжди — 250 грн\n\n"
+        "⏰ Після натискання «Оплатити» реквізити надійдуть протягом 10–30 хвилин.",
         reply_markup=reply_markup
     )
 
-# Обработчик кнопки "Оплатити" — сначала окно подтверждения
 async def pay(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    
-    keyboard = [
-        [InlineKeyboardButton("Так✅", callback_data='confirm_purchase')],
-        [InlineKeyboardButton("Ні❌", callback_data='cancel_purchase')]
-    ]
+    keyboard = [[InlineKeyboardButton("Так✅", callback_data='confirm_purchase')],
+                [InlineKeyboardButton("Ні❌", callback_data='cancel_purchase')]]
     reply_markup = InlineKeyboardMarkup(keyboard)
-    
-    await query.edit_message_text(
-        "Ви точно підтверджуєте свою покупку?",
-        reply_markup=reply_markup
-    )
+    await query.edit_message_text("Ви точно підтверджуєте свою покупку?", reply_markup=reply_markup)
 
-# Обработчик подтверждения покупки — "Так✅"
+# ==========================
+# Подтверждение покупки
+# ==========================
 async def confirm_purchase(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     client_id = query.from_user.id
-    
+    if not is_within_working_hours():
+        await query.edit_message_text("Магазин зачинений. Реквізити будуть надіслані після 10:00.")
+        return
     try:
-        if not check_request_limit(client_id):
-            await query.edit_message_text(text="Ви перевищили ліміт запитів (10 на годину). Спробуйте пізніше.")
-            return
-        
-        add_request(client_id)
-        
-        conn = sqlite3.connect('orders.db')
-        c = conn.cursor()
-        c.execute("INSERT OR REPLACE INTO orders (client_id, status, details) VALUES (?, ?, ?)",
-                  (client_id, 'waiting_req', ''))
-        conn.commit()
-        conn.close()
-        
-        message = (
-            "Ваш запит на реквізити отримано!\n"
-            "Реквізити для оплати будуть відправлені протягом 10–30 хвилин.\n"
-            "Робочий час магазину: з 10:00 до 00:00."
-        )
-        if not is_within_working_hours():
-            message += "\nЗараз магазин зачинений. Реквізити будуть відправлені після 10:00."
-        
-        await query.edit_message_text(text=message)
-        
-        # Уведомление админов
+        # Уведомление админов через технического бота
         admin_bot = Bot(token=ADMIN_BOT_TOKEN)
         for admin_id in ADMIN_IDS:
             await admin_bot.send_message(
                 chat_id=admin_id,
                 text=f"Клієнт {client_id} хоче купити товар. Відправте реквізити через технічного бота: /send_req {client_id} <реквізити>"
             )
+        await query.edit_message_text(
+            "Ваш запит на реквізити отримано!\nРеквізити будуть відправлені протягом 10–30 хвилин."
+        )
     except Exception as e:
-        print(f"Загальна помилка в confirm_purchase для {client_id}: {e}")
-        await query.edit_message_text(text=f"Сталася помилка. Спробуйте ще раз: {e}")
+        print(f"Помилка confirm_purchase: {e}")
+        await query.edit_message_text(f"Сталася помилка. Спробуйте ще раз: {e}")
 
-# Обработчик отмены покупки — "Ні❌"
 async def cancel_purchase(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     await query.edit_message_text("Ви скасували підтвердження покупки. Ви можете повторити процес пізніше.")
 
-# Обработчик квитанций (фото или файл) от клиента
+# ==========================
+# Обработка квитанций
+# ==========================
 async def handle_payment_proof(update: Update, context: ContextTypes.DEFAULT_TYPE):
     client_id = update.message.from_user.id
-    conn = sqlite3.connect('orders.db')
-    c = conn.cursor()
-    c.execute("SELECT status FROM orders WHERE client_id = ?", (client_id,))
-    result = c.fetchone()
-    if not result or result[0] != 'waiting_payment':
+    status = get_order_status(client_id)
+    if not status or status != 'waiting_payment':
         await update.message.reply_text("Спочатку зробіть замовлення і отримайте реквізити!")
-        conn.close()
         return
-    
     try:
         admin_bot = Bot(token=ADMIN_BOT_TOKEN)
         if update.message.photo:
@@ -190,22 +167,18 @@ async def handle_payment_proof(update: Update, context: ContextTypes.DEFAULT_TYP
                 )
         else:
             await update.message.reply_text("Надішліть фото або файл квитанції.")
-            conn.close()
             return
-        
-        c.execute("UPDATE orders SET status = ? WHERE client_id = ?", ('waiting_confirm', client_id))
-        conn.commit()
-        conn.close()
+        update_order_status(client_id, 'waiting_confirm')
         await update.message.reply_text("Ваш платіж перевіряється.")
     except Exception as e:
         print(f"Помилка надсилання квитанції адміну для {client_id}: {e}")
         await update.message.reply_text("Помилка при надсиланні квитанції. Спробуйте ще раз.")
 
+# ==========================
+# Запуск бота
+# ==========================
 def main():
-    init_db()  # Ініціалізація бази даних
     application = Application.builder().token(TOKEN).build()
-    
-    # Обработчики
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CallbackQueryHandler(start_menu, pattern='start_menu'))
     application.add_handler(CallbackQueryHandler(buy_product, pattern='buy_product'))
@@ -213,14 +186,8 @@ def main():
     application.add_handler(CallbackQueryHandler(confirm_purchase, pattern='confirm_purchase'))
     application.add_handler(CallbackQueryHandler(cancel_purchase, pattern='cancel_purchase'))
     application.add_handler(MessageHandler(filters.PHOTO | filters.Document.ALL, handle_payment_proof))
-    
     print("Основний бот запущений...")
-    while True:
-        try:
-            application.run_polling()
-        except Exception as e:
-            print(f"Помилка polling: {e}. Перезапуск через 5 секунд...")
-            import time; time.sleep(5)
+    application.run_polling()
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()
