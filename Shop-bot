@@ -1,18 +1,18 @@
 import sqlite3
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, Bot
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
 from datetime import datetime, time, timedelta
 
 # Токены ботов
-TOKEN = '8294869186:AAFXW4_oPojtESNjFrXxy3HILafSj-DZsYA'  # Основной бот
-ADMIN_BOT_TOKEN = '7780990328:AAHozWNig4dY56eK15W2pU0ekR6sxpwEMcM'  # Технический бот
+TOKEN = '8294869186:AAFXW4_oPojtESNjFrXxy3HILafSj-DZsYA'  # Основний бот
+ADMIN_BOT_TOKEN = '7780990328:AAHozWNig4dY56eK15W2pU0ekR6sxpwEMcM'  # Технічний бот
 
 # Список admin_id (твои chat_id для получения уведомлений)
-ADMIN_IDS = [5012932270, 7427253214]  # Добавь здесь все админские chat_id
+ADMIN_IDS = [5012932270, 7427253214]  # Добавьте здесь все админские chat_id
 
 # Рабочие часы магазина
 WORK_START = time(10, 0)  # 10:00
-WORK_END = time(0, 0)    # 00:00 (полночь следующего дня)
+WORK_END = time(0, 0)     # 00:00 (полночь следующего дня)
 
 # Ограничение запросов на оплату
 MAX_REQUESTS_PER_HOUR = 10
@@ -38,14 +38,13 @@ def check_request_limit(client_id):
     try:
         conn = sqlite3.connect('orders.db')
         c = conn.cursor()
-        one_hour_ago = int((datetime.now() - timedelta(hours=1)).timestamp())  # <-- исправлено
+        one_hour_ago = int((datetime.now() - timedelta(hours=1)).timestamp())
         c.execute("SELECT COUNT(*) FROM requests WHERE client_id = ? AND request_time > ?", (client_id, one_hour_ago))
         count = c.fetchone()[0]
         conn.close()
-        print(f"Проверено запросов для {client_id}: {count}")
         return count < MAX_REQUESTS_PER_HOUR
     except Exception as e:
-        print(f"Ошибка проверки лимита для {client_id}: {e}")
+        print(f"Помилка перевірки ліміту для {client_id}: {e}")
         return False
 
 # Добавление запроса в базу
@@ -57,9 +56,8 @@ def add_request(client_id):
         c.execute("INSERT INTO requests (client_id, request_time) VALUES (?, ?)", (client_id, current_time))
         conn.commit()
         conn.close()
-        print(f"Добавлен запрос для {client_id} в {current_time}")
     except Exception as e:
-        print(f"Ошибка добавления запроса для {client_id}: {e}")
+        print(f"Помилка додавання запиту для {client_id}: {e}")
 
 # Команда /start — кнопка "Старт"
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -82,7 +80,7 @@ async def start_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def buy_product(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    keyboard = [[InlineKeyboardButton("✅Оплатити✅", callback_data='pay')]]
+    keyboard = [[InlineKeyboardButton("Оплатити", callback_data='pay')]]
     reply_markup = InlineKeyboardMarkup(keyboard)
     await query.edit_message_text(
         "💎 Преміум Додаток \"Фейк Дія\"\n\n"
@@ -97,15 +95,31 @@ async def buy_product(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=reply_markup
     )
 
-# Обработчик кнопки "✅Оплатити✅"
+# Обработчик кнопки "Оплатити" — сначала окно подтверждения
 async def pay(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    
+    keyboard = [
+        [InlineKeyboardButton("Так✅", callback_data='confirm_purchase')],
+        [InlineKeyboardButton("Ні❌", callback_data='cancel_purchase')]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    await query.edit_message_text(
+        "Ви точно підтверджуєте свою покупку?",
+        reply_markup=reply_markup
+    )
+
+# Обработчик подтверждения покупки — "Так✅"
+async def confirm_purchase(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     client_id = query.from_user.id
     
     try:
         if not check_request_limit(client_id):
-            await query.edit_message_text(text="Вы превысили лимит запросов (10 в час). Попробуйте позже.")
+            await query.edit_message_text(text="Ви перевищили ліміт запитів (10 на годину). Спробуйте пізніше.")
             return
         
         add_request(client_id)
@@ -119,28 +133,30 @@ async def pay(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         message = (
             "Ваш запит на реквізити отримано!\n"
-            "Реквізити для оплаты будут отправлены в течение 10–30 минут.\n"
+            "Реквізити для оплати будуть відправлені протягом 10–30 хвилин.\n"
             "Робочий час магазину: з 10:00 до 00:00."
         )
         if not is_within_working_hours():
-            message += "\nСейчас магазин закрыт. Реквизиты будут отправлены после 10:00."
+            message += "\nЗараз магазин зачинений. Реквізити будуть відправлені після 10:00."
         
         await query.edit_message_text(text=message)
         
-        try:
-            from telegram import Bot
-            admin_bot = Bot(token=ADMIN_BOT_TOKEN)
-            for admin_id in ADMIN_IDS:
-                await admin_bot.send_message(
-                    chat_id=admin_id,
-                    text=f"Клиент {client_id} хочет купить товар. Отправьте реквізиты через технический бот: /send_req {client_id} <реквизиты>"
-                )
-        except Exception as e:
-            print(f"Ошибка отправки уведомления админу {admin_id}: {e}")
-            await query.edit_message_text(text=f"Ошибка при уведомлении админа: {e}. Попробуйте позже.")
+        # Уведомление админов
+        admin_bot = Bot(token=ADMIN_BOT_TOKEN)
+        for admin_id in ADMIN_IDS:
+            await admin_bot.send_message(
+                chat_id=admin_id,
+                text=f"Клієнт {client_id} хоче купити товар. Відправте реквізити через технічного бота: /send_req {client_id} <реквізити>"
+            )
     except Exception as e:
-        print(f"Общая ошибка в pay для {client_id}: {e}")
-        await query.edit_message_text(text=f"Произошла ошибка. Попробуйте снова: {e}")
+        print(f"Загальна помилка в confirm_purchase для {client_id}: {e}")
+        await query.edit_message_text(text=f"Сталася помилка. Спробуйте ще раз: {e}")
+
+# Обработчик отмены покупки — "Ні❌"
+async def cancel_purchase(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    await query.edit_message_text("Ви скасували підтвердження покупки. Ви можете повторити процес пізніше.")
 
 # Обработчик квитанций (фото или файл) от клиента
 async def handle_payment_proof(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -150,12 +166,11 @@ async def handle_payment_proof(update: Update, context: ContextTypes.DEFAULT_TYP
     c.execute("SELECT status FROM orders WHERE client_id = ?", (client_id,))
     result = c.fetchone()
     if not result or result[0] != 'waiting_payment':
-        await update.message.reply_text("Сначала сделайте заказ и получите реквизиты!")
+        await update.message.reply_text("Спочатку зробіть замовлення і отримайте реквізити!")
         conn.close()
         return
     
     try:
-        from telegram import Bot
         admin_bot = Bot(token=ADMIN_BOT_TOKEN)
         if update.message.photo:
             photo = update.message.photo[-1].file_id
@@ -163,7 +178,7 @@ async def handle_payment_proof(update: Update, context: ContextTypes.DEFAULT_TYP
                 await admin_bot.send_photo(
                     chat_id=admin_id,
                     photo=photo,
-                    caption=f"Квитанция (фото) от клиента {client_id}. Подтвердите через технический бот: /confirm {client_id}"
+                    caption=f"Квитанція (фото) від клієнта {client_id}. Підтвердіть через технічного бота: /confirm {client_id}"
                 )
         elif update.message.document:
             document = update.message.document.file_id
@@ -171,23 +186,23 @@ async def handle_payment_proof(update: Update, context: ContextTypes.DEFAULT_TYP
                 await admin_bot.send_document(
                     chat_id=admin_id,
                     document=document,
-                    caption=f"Квитанция (файл) от клиента {client_id}. Подтвердите через технический бот: /confirm {client_id}"
+                    caption=f"Квитанція (файл) від клієнта {client_id}. Підтвердіть через технічного бота: /confirm {client_id}"
                 )
         else:
-            await update.message.reply_text("Отправьте фото или файл квитанции.")
+            await update.message.reply_text("Надішліть фото або файл квитанції.")
             conn.close()
             return
         
         c.execute("UPDATE orders SET status = ? WHERE client_id = ?", ('waiting_confirm', client_id))
         conn.commit()
         conn.close()
-        await update.message.reply_text("Ваш платёж проверяется.")
+        await update.message.reply_text("Ваш платіж перевіряється.")
     except Exception as e:
-        print(f"Ошибка отправки квитанции админу для {client_id}: {e}")
-        await update.message.reply_text("Ошибка при отправке квитанции. Попробуйте ещё раз.")
+        print(f"Помилка надсилання квитанції адміну для {client_id}: {e}")
+        await update.message.reply_text("Помилка при надсиланні квитанції. Спробуйте ще раз.")
 
 def main():
-    init_db()  # Инициализируем базу данных
+    init_db()  # Ініціалізація бази даних
     application = Application.builder().token(TOKEN).build()
     
     # Обработчики
@@ -195,14 +210,16 @@ def main():
     application.add_handler(CallbackQueryHandler(start_menu, pattern='start_menu'))
     application.add_handler(CallbackQueryHandler(buy_product, pattern='buy_product'))
     application.add_handler(CallbackQueryHandler(pay, pattern='pay'))
+    application.add_handler(CallbackQueryHandler(confirm_purchase, pattern='confirm_purchase'))
+    application.add_handler(CallbackQueryHandler(cancel_purchase, pattern='cancel_purchase'))
     application.add_handler(MessageHandler(filters.PHOTO | filters.Document.ALL, handle_payment_proof))
     
-    print("Основной бот запущен...")
+    print("Основний бот запущений...")
     while True:
         try:
             application.run_polling()
         except Exception as e:
-            print(f"Ошибка polling: {e}. Перезапуск через 5 секунд...")
+            print(f"Помилка polling: {e}. Перезапуск через 5 секунд...")
             import time; time.sleep(5)
 
 if __name__ == '__main__':
