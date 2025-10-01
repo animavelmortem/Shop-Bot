@@ -7,8 +7,8 @@ from datetime import datetime, time
 TOKEN = '8294869186:AAFXW4_oPojtESNjFrXxy3HILafSj-DZsYA'  # Основной бот
 ADMIN_BOT_TOKEN = '7780990328:AAHozWNig4dY56eK15W2pU0ekR6sxpwEMcM'  # Технический бот
 
-# Список admin_id (замени на свой chat_id)
-ADMIN_IDS = [твой_chat_id]  # Замени на свой chat_id (узнай через /myid в @Abaododfo_bot)
+# Список admin_id
+ADMIN_IDS = [5012932270, 7427253214]  # Твои chat_id и новый
 
 # Рабочие часы магазина
 WORK_START = time(10, 0)  # 10:00
