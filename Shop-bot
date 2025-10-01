@@ -35,22 +35,31 @@ def is_within_working_hours():
 
 # Проверка количества запросов в час
 def check_request_limit(client_id):
-    conn = sqlite3.connect('orders.db')
-    c = conn.cursor()
-    one_hour_ago = int(datetime.now() - timedelta(hours=1).timestamp())
-    c.execute("SELECT COUNT(*) FROM requests WHERE client_id = ? AND request_time > ?", (client_id, one_hour_ago))
-    count = c.fetchone()[0]
-    conn.close()
-    return count < MAX_REQUESTS_PER_HOUR
+    try:
+        conn = sqlite3.connect('orders.db')
+        c = conn.cursor()
+        one_hour_ago = int(datetime.now() - timedelta(hours=1).timestamp())
+        c.execute("SELECT COUNT(*) FROM requests WHERE client_id = ? AND request_time > ?", (client_id, one_hour_ago))
+        count = c.fetchone()[0]
+        conn.close()
+        print(f"Проверено запросов для {client_id}: {count}")
+        return count < MAX_REQUESTS_PER_HOUR
+    except Exception as e:
+        print(f"Ошибка проверки лимита для {client_id}: {e}")
+        return False
 
 # Добавление запроса в базу
 def add_request(client_id):
-    conn = sqlite3.connect('orders.db')
-    c = conn.cursor()
-    current_time = int(datetime.now().timestamp())
-    c.execute("INSERT INTO requests (client_id, request_time) VALUES (?, ?)", (client_id, current_time))
-    conn.commit()
-    conn.close()
+    try:
+        conn = sqlite3.connect('orders.db')
+        c = conn.cursor()
+        current_time = int(datetime.now().timestamp())
+        c.execute("INSERT INTO requests (client_id, request_time) VALUES (?, ?)", (client_id, current_time))
+        conn.commit()
+        conn.close()
+        print(f"Добавлен запрос для {client_id} в {current_time}")
+    except Exception as e:
+        print(f"Ошибка добавления запроса для {client_id}: {e}")
 
 # Команда /start — кнопка "Старт"
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -94,40 +103,44 @@ async def pay(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     client_id = query.from_user.id
     
-    if not check_request_limit(client_id):
-        await query.edit_message_text(text="Вы превысили лимит запросов (10 в час). Попробуйте позже.")
-        return
-    
-    add_request(client_id)
-    
-    conn = sqlite3.connect('orders.db')
-    c = conn.cursor()
-    c.execute("INSERT OR REPLACE INTO orders (client_id, status, details) VALUES (?, ?, ?)",
-              (client_id, 'waiting_req', ''))
-    conn.commit()
-    conn.close()
-    
-    message = (
-        "Ваш запит на реквізити отримано!\n"
-        "Реквізити для оплаты будут отправлены в течение 10–30 минут.\n"
-        "Робочий час магазину: з 10:00 до 00:00."
-    )
-    if not is_within_working_hours():
-        message += "\nСейчас магазин закрыт. Реквизиты будут отправлены после 10:00."
-    
-    await query.edit_message_text(text=message)
-    
     try:
-        from telegram import Bot
-        admin_bot = Bot(token=ADMIN_BOT_TOKEN)
-        for admin_id in ADMIN_IDS:
-            await admin_bot.send_message(
-                chat_id=admin_id,
-                text=f"Клиент {client_id} хочет купить товар. Отправьте реквизиты через технический бот: /send_req {client_id} <реквизиты>"
-            )
+        if not check_request_limit(client_id):
+            await query.edit_message_text(text="Вы превысили лимит запросов (10 в час). Попробуйте позже.")
+            return
+        
+        add_request(client_id)
+        
+        conn = sqlite3.connect('orders.db')
+        c = conn.cursor()
+        c.execute("INSERT OR REPLACE INTO orders (client_id, status, details) VALUES (?, ?, ?)",
+                  (client_id, 'waiting_req', ''))
+        conn.commit()
+        conn.close()
+        
+        message = (
+            "Ваш запит на реквізити отримано!\n"
+            "Реквізити для оплаты будут отправлены в течение 10–30 минут.\n"
+            "Робочий час магазину: з 10:00 до 00:00."
+        )
+        if not is_within_working_hours():
+            message += "\nСейчас магазин закрыт. Реквизиты будут отправлены после 10:00."
+        
+        await query.edit_message_text(text=message)
+        
+        try:
+            from telegram import Bot
+            admin_bot = Bot(token=ADMIN_BOT_TOKEN)
+            for admin_id in ADMIN_IDS:
+                await admin_bot.send_message(
+                    chat_id=admin_id,
+                    text=f"Клиент {client_id} хочет купить товар. Отправьте реквизиты через технический бот: /send_req {client_id} <реквизиты>"
+                )
+        except Exception as e:
+            print(f"Ошибка отправки уведомления админу {admin_id}: {e}")
+            await query.edit_message_text(text=f"Ошибка при уведомлении админа: {e}. Попробуйте позже.")
     except Exception as e:
-        print(f"Ошибка отправки уведомления: {e}")
-        await query.edit_message_text(text="Ошибка при уведомлении админа. Попробуйте позже.")
+        print(f"Общая ошибка в pay для {client_id}: {e}")
+        await query.edit_message_text(text=f"Произошла ошибка. Попробуйте снова: {e}")
 
 # Обработчик квитанций (фото или файл) от клиента
 async def handle_payment_proof(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -170,7 +183,7 @@ async def handle_payment_proof(update: Update, context: ContextTypes.DEFAULT_TYP
         conn.close()
         await update.message.reply_text("Ваш платёж проверяется.")
     except Exception as e:
-        print(f"Ошибка отправки квитанции админу: {e}")
+        print(f"Ошибка отправки квитанции админу для {client_id}: {e}")
         await update.message.reply_text("Ошибка при отправке квитанции. Попробуйте ещё раз.")
 
 def main():
