@@ -38,7 +38,7 @@ def check_request_limit(client_id):
     try:
         conn = sqlite3.connect('orders.db')
         c = conn.cursor()
-        one_hour_ago = int(datetime.now() - timedelta(hours=1).timestamp())
+        one_hour_ago = int((datetime.now() - timedelta(hours=1)).timestamp())  # <-- исправлено
         c.execute("SELECT COUNT(*) FROM requests WHERE client_id = ? AND request_time > ?", (client_id, one_hour_ago))
         count = c.fetchone()[0]
         conn.close()
@@ -133,7 +133,7 @@ async def pay(update: Update, context: ContextTypes.DEFAULT_TYPE):
             for admin_id in ADMIN_IDS:
                 await admin_bot.send_message(
                     chat_id=admin_id,
-                    text=f"Клиент {client_id} хочет купить товар. Отправьте реквизиты через технический бот: /send_req {client_id} <реквизиты>"
+                    text=f"Клиент {client_id} хочет купить товар. Отправьте реквізиты через технический бот: /send_req {client_id} <реквизиты>"
                 )
         except Exception as e:
             print(f"Ошибка отправки уведомления админу {admin_id}: {e}")
