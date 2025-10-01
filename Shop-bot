@@ -1,18 +1,21 @@
 import sqlite3
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
-from datetime import datetime, time
+from datetime import datetime, time, timedelta
 
 # Токены ботов
 TOKEN = '8294869186:AAFXW4_oPojtESNjFrXxy3HILafSj-DZsYA'  # Основной бот
 ADMIN_BOT_TOKEN = '7780990328:AAHozWNig4dY56eK15W2pU0ekR6sxpwEMcM'  # Технический бот
 
-# Список admin_id
-ADMIN_IDS = [5012932270, 7427253214]  # Твои chat_id и новый
+# Список admin_id (твои chat_id для получения уведомлений)
+ADMIN_IDS = [5012932270, 7427253214]  # Добавь здесь все админские chat_id
 
 # Рабочие часы магазина
 WORK_START = time(10, 0)  # 10:00
 WORK_END = time(0, 0)    # 00:00 (полночь следующего дня)
+
+# Ограничение запросов на оплату
+MAX_REQUESTS_PER_HOUR = 10
 
 # Подключение к базе данных SQLite
 def init_db():
@@ -20,6 +23,8 @@ def init_db():
     c = conn.cursor()
     c.execute('''CREATE TABLE IF NOT EXISTS orders
                  (client_id INTEGER PRIMARY KEY, status TEXT, details TEXT)''')
+    c.execute('''CREATE TABLE IF NOT EXISTS requests
+                 (client_id INTEGER, request_time INTEGER)''')
     conn.commit()
     conn.close()
 
@@ -27,6 +32,25 @@ def init_db():
 def is_within_working_hours():
     now = datetime.now().time()
     return now >= WORK_START or now <= WORK_END
+
+# Проверка количества запросов в час
+def check_request_limit(client_id):
+    conn = sqlite3.connect('orders.db')
+    c = conn.cursor()
+    one_hour_ago = int(datetime.now() - timedelta(hours=1).timestamp())
+    c.execute("SELECT COUNT(*) FROM requests WHERE client_id = ? AND request_time > ?", (client_id, one_hour_ago))
+    count = c.fetchone()[0]
+    conn.close()
+    return count < MAX_REQUESTS_PER_HOUR
+
+# Добавление запроса в базу
+def add_request(client_id):
+    conn = sqlite3.connect('orders.db')
+    c = conn.cursor()
+    current_time = int(datetime.now().timestamp())
+    c.execute("INSERT INTO requests (client_id, request_time) VALUES (?, ?)", (client_id, current_time))
+    conn.commit()
+    conn.close()
 
 # Команда /start — кнопка "Старт"
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -69,6 +93,12 @@ async def pay(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     client_id = query.from_user.id
+    
+    if not check_request_limit(client_id):
+        await query.edit_message_text(text="Вы превысили лимит запросов (10 в час). Попробуйте позже.")
+        return
+    
+    add_request(client_id)
     
     conn = sqlite3.connect('orders.db')
     c = conn.cursor()
