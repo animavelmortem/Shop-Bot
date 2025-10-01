@@ -7,6 +7,9 @@ from datetime import datetime, time
 TOKEN = '8294869186:AAFXW4_oPojtESNjFrXxy3HILafSj-DZsYA'  # Основной бот
 ADMIN_BOT_TOKEN = '7780990328:AAHozWNig4dY56eK15W2pU0ekR6sxpwEMcM'  # Технический бот
 
+# Список admin_id (замени на свой chat_id)
+ADMIN_IDS = [твой_chat_id]  # Замени на свой chat_id (узнай через /myid в @Abaododfo_bot)
+
 # Рабочие часы магазина
 WORK_START = time(10, 0)  # 10:00
 WORK_END = time(0, 0)    # 00:00 (полночь следующего дня)
@@ -67,7 +70,6 @@ async def pay(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     client_id = query.from_user.id
     
-    # Сохраняем заказ в базу
     conn = sqlite3.connect('orders.db')
     c = conn.cursor()
     c.execute("INSERT OR REPLACE INTO orders (client_id, status, details) VALUES (?, ?, ?)",
@@ -75,30 +77,27 @@ async def pay(update: Update, context: ContextTypes.DEFAULT_TYPE):
     conn.commit()
     conn.close()
     
-    # Сообщение клиенту
     message = (
         "Ваш запит на реквізити отримано!\n"
-        "Реквізити для оплати будуть надіслані протягом 10–30 хвилин.\n"
+        "Реквізити для оплаты будут отправлены в течение 10–30 минут.\n"
         "Робочий час магазину: з 10:00 до 00:00."
     )
     if not is_within_working_hours():
-        message += "\nЗараз магазин закрито. Реквізити будуть надіслані після 10:00."
+        message += "\nСейчас магазин закрыт. Реквизиты будут отправлены после 10:00."
     
     await query.edit_message_text(text=message)
     
-    # Уведомляем админов через технический бот
     try:
         from telegram import Bot
         admin_bot = Bot(token=ADMIN_BOT_TOKEN)
-        # Временное решение: отправляем уведомление в чат с клиентом, но нужно отправить админам
-        # Поскольку ADMIN_IDS есть только в admin_bot.py, уведомление пойдёт всем админам через admin_bot.py
-        await admin_bot.send_message(
-            chat_id=client_id,  # Это временно, исправим в admin_bot.py
-            text=f"Клієнт {client_id} хоче купити товар. Надішліть реквізити через технічний бот: /send_req {client_id} <реквізити>"
-        )
+        for admin_id in ADMIN_IDS:
+            await admin_bot.send_message(
+                chat_id=admin_id,
+                text=f"Клиент {client_id} хочет купить товар. Отправьте реквизиты через технический бот: /send_req {client_id} <реквизиты>"
+            )
     except Exception as e:
-        print(f"Помилка надсилання повідомлення адміну: {e}")
-        await query.edit_message_text(text="Помилка при повідомленні адміна. Спробуйте пізніше.")
+        print(f"Ошибка отправки уведомления: {e}")
+        await query.edit_message_text(text="Ошибка при уведомлении админа. Попробуйте позже.")
 
 # Обработчик квитанций (фото или файл) от клиента
 async def handle_payment_proof(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -108,40 +107,41 @@ async def handle_payment_proof(update: Update, context: ContextTypes.DEFAULT_TYP
     c.execute("SELECT status FROM orders WHERE client_id = ?", (client_id,))
     result = c.fetchone()
     if not result or result[0] != 'waiting_payment':
-        await update.message.reply_text("Спочатку зробіть замовлення та отримайте реквізити!")
+        await update.message.reply_text("Сначала сделайте заказ и получите реквизиты!")
         conn.close()
         return
     
-    # Пересылаем квитанцию админам через технический бот
     try:
         from telegram import Bot
         admin_bot = Bot(token=ADMIN_BOT_TOKEN)
         if update.message.photo:
             photo = update.message.photo[-1].file_id
-            await admin_bot.send_photo(
-                chat_id=client_id,  # Временная заглушка, исправим в admin_bot.py
-                photo=photo,
-                caption=f"Квитанція (фото) від клієнта {client_id}. Підтвердіть через технічний бот: /confirm {client_id}"
-            )
+            for admin_id in ADMIN_IDS:
+                await admin_bot.send_photo(
+                    chat_id=admin_id,
+                    photo=photo,
+                    caption=f"Квитанция (фото) от клиента {client_id}. Подтвердите через технический бот: /confirm {client_id}"
+                )
         elif update.message.document:
             document = update.message.document.file_id
-            await admin_bot.send_document(
-                chat_id=client_id,  # Временная заглушка
-                document=document,
-                caption=f"Квитанція (файл) від клієнта {client_id}. Підтвердіть через технічний бот: /confirm {client_id}"
-            )
+            for admin_id in ADMIN_IDS:
+                await admin_bot.send_document(
+                    chat_id=admin_id,
+                    document=document,
+                    caption=f"Квитанция (файл) от клиента {client_id}. Подтвердите через технический бот: /confirm {client_id}"
+                )
         else:
-            await update.message.reply_text("Відправте фото або файл квитанції.")
+            await update.message.reply_text("Отправьте фото или файл квитанции.")
             conn.close()
             return
         
         c.execute("UPDATE orders SET status = ? WHERE client_id = ?", ('waiting_confirm', client_id))
         conn.commit()
         conn.close()
-        await update.message.reply_text("Ваш платіж перевіряється.")
+        await update.message.reply_text("Ваш платёж проверяется.")
     except Exception as e:
-        print(f"Помилка надсилання квитанції адміну: {e}")
-        await update.message.reply_text("Помилка при надсиланні квитанції. Спробуйте ще раз.")
+        print(f"Ошибка отправки квитанции админу: {e}")
+        await update.message.reply_text("Ошибка при отправке квитанции. Попробуйте ещё раз.")
 
 def main():
     init_db()  # Инициализируем базу данных
@@ -155,7 +155,12 @@ def main():
     application.add_handler(MessageHandler(filters.PHOTO | filters.Document.ALL, handle_payment_proof))
     
     print("Основной бот запущен...")
-    application.run_polling()
+    while True:
+        try:
+            application.run_polling()
+        except Exception as e:
+            print(f"Ошибка polling: {e}. Перезапуск через 5 секунд...")
+            import time; time.sleep(5)
 
 if __name__ == '__main__':
     main()
